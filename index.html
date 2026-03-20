@@ -9,7 +9,7 @@
     <title>Lush Harvest | Bioluminescent Exploration</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./src/style.css">
 </head>
 
@@ -143,6 +143,10 @@
                 <h2>Mystic Upgrades</h2>
                 <button id="close-upgrades" class="close-btn">&times;</button>
             </header>
+            <div class="shop-tabs">
+                <button class="tab-btn active" data-currency="motes">Mote Upgrades</button>
+                <button class="tab-btn" data-currency="starFragments">Star Upgrades</button>
+            </div>
             <div class="upgrade-list">
             </div>
         </div>
@@ -162,25 +166,53 @@
     <div id="settings-panel" class="overlay">
         <div class="overlay-content glass" style="text-align: center;">
             <header>
-                <h2>Settings</h2>
+                <h2>Settings & System</h2>
                 <button id="close-settings" class="close-btn">&times;</button>
             </header>
-            <div style="display: flex; flex-direction: column; gap: 15px; padding-top: 20px;">
-                <div class="setting-item">
-                    <label>Master Volume</label>
-                    <input type="range" id="volume-control" min="0" max="100" value="80">
+            <div style="display: flex; flex-direction: column; gap: 12px; padding-top: 10px;">
+                <div class="setting-item" style="flex-direction: column; align-items: start; gap: 5px;">
+                    <div style="display: flex; justify-content: space-between; width: 100%;">
+                        <label>Master Volume</label>
+                        <span id="master-vol-val">80%</span>
+                    </div>
+                    <input type="range" id="master-volume-control" min="0" max="100" value="80" style="width: 100%;">
+                </div>
+                <div class="setting-item" style="flex-direction: column; align-items: start; gap: 5px;">
+                    <div style="display: flex; justify-content: space-between; width: 100%;">
+                        <label>Music Volume</label>
+                        <span id="bgm-vol-val">80%</span>
+                    </div>
+                    <input type="range" id="bgm-volume-control" min="0" max="100" value="80" style="width: 100%;">
+                </div>
+                <div class="setting-item" style="flex-direction: column; align-items: start; gap: 5px;">
+                    <div style="display: flex; justify-content: space-between; width: 100%;">
+                        <label>Effects Volume</label>
+                        <span id="sfx-vol-val">80%</span>
+                    </div>
+                    <input type="range" id="sfx-volume-control" min="0" max="100" value="80" style="width: 100%;">
                 </div>
                 <div class="setting-item">
                     <label>Show Particles</label>
                     <input type="checkbox" id="particles-toggle" checked>
                 </div>
-                <p>Transfer your progress to another device</p>
-                <button id="export-save" class="upgrade-btn">Copy Save String</button>
-                <button id="import-save" class="upgrade-btn">Load Save String</button>
-                <div style="height: 1px; background: rgba(255,255,255,0.2); margin: 10px 0;"></div>
-                <button id="wipe-save" class="upgrade-btn" style="background: #a92020;">Hard Reset Progress</button>
-                <p id="settings-msg"
-                    style="color: var(--neon-lime); min-height: 20px; font-weight: bold; margin-top: 10px;"></p>
+                <div class="setting-item">
+                    <label>Screen Shake</label>
+                    <input type="checkbox" id="shake-toggle" checked>
+                </div>
+
+                <div style="height: 1px; background: rgba(255,255,255,0.1); margin: 10px 0;"></div>
+                
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 5px;">Data Management</p>
+                <button id="export-save" class="upgrade-btn" style="padding: 8px;">Copy Save String</button>
+                <button id="import-save" class="upgrade-btn" style="padding: 8px;">Load Save String</button>
+                <button id="wipe-save" class="upgrade-btn" style="background: #a92020; padding: 8px;">Hard Reset Progress</button>
+                
+                <p id="settings-msg" style="color: var(--neon-lime); min-height: 20px; font-weight: bold; margin-top: 5px; font-size: 0.8rem;"></p>
+                
+                <div style="margin-top: 10px; padding: 10px; border-radius: 10px; background: rgba(0,0,255,0.1);">
+                    <p style="font-size: 0.75rem; color: var(--neon-cyan); margin: 0;">v2.3 Production</p>
+                    <p style="font-size: 0.7rem; color: var(--text-muted); margin: 5px 0 0 0;">Developed by <span style="color: white; font-weight: bold;">WarpGamesTV</span></p>
+                </div>
             </div>
         </div>
     </div>
@@ -274,15 +306,28 @@
     </div>
 
     <div id="main-menu" class="overlay active">
-        <div class="main-menu-content overlay-content glass slide-up">
-            <h1 class="game-title neon-cyan">Lush Harvest</h1>
-            <p class="game-subtitle">Explore a bioluminescent world of wonder</p>
-            <div class="menu-actions">
-                <button id="start-game" class="upgrade-btn pulse-btn">Start Journey</button>
-                <button id="menu-settings-toggle" class="upgrade-btn secondary-btn">Settings</button>
+        <div id="menu-particles"></div>
+        <div class="main-menu-content glass slide-up">
+            <div class="menu-header">
+                <img src="./lush_harvest_logo_1773966169586.png" alt="Lush Harvest" class="menu-logo">
+                <h1 class="game-title">Lush Harvest</h1>
+                <p class="game-subtitle">Explore a bioluminescent world of wonder</p>
             </div>
-            <div class="menu-footer">
-                <p>Created with ✨ and 🌿</p>
+            
+            <div class="menu-actions">
+                <button id="start-game" class="pulse-btn primary-menu-btn">
+                    <span class="btn-shine"></span>
+                    <span class="btn-text">Start Journey</span>
+                </button>
+                <button id="menu-settings-toggle" class="secondary-menu-btn">
+                    <span class="btn-icon">⚙️</span> Settings
+                </button>
+            </div>
+            
+            <div class="menu-footer-card glass">
+                <div class="version-tag">v2.3 PRODUCTION</div>
+                <div class="creator-info">Created by <span>WarpGamesTV</span></div>
+                <p class="tagline">Crafted with ✨ and 🌿</p>
             </div>
         </div>
     </div>

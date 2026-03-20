@@ -5,11 +5,39 @@ let bgmOscillators = [];
 let isAudioInitialized = false;
 let isBgmPlaying = false;
 let masterGain = null;
+let bgmGain = null;
+let sfxGain = null;
+let isWiping = false;
+let activeUpgradeTab = 'motes'; // Default tab
 
 function updateVolume() {
+    if (!audioCtx) return;
+    
+    // Master Gain (attenuation factor)
+    const masterBase = (state.settings.masterVolume ?? state.settings.volume ?? 80) / 100;
     if (masterGain) {
-        masterGain.gain.setTargetAtTime(state.settings.volume / 100 * 0.3, audioCtx.currentTime, 0.1);
+        masterGain.gain.setTargetAtTime(masterBase * 0.4, audioCtx.currentTime, 0.1);
     }
+    
+    // BGM Gain
+    if (bgmGain) {
+        const bgmBase = (state.settings.bgmVolume ?? 80) / 100;
+        bgmGain.gain.setTargetAtTime(bgmBase, audioCtx.currentTime, 0.1);
+    }
+    
+    // SFX Gain
+    if (sfxGain) {
+        const sfxBase = (state.settings.sfxVolume ?? 80) / 100;
+        sfxGain.gain.setTargetAtTime(sfxBase, audioCtx.currentTime, 0.1);
+    }
+
+    // Sync UI Labels if open
+    const mVal = document.getElementById('master-vol-val');
+    const bVal = document.getElementById('bgm-vol-val');
+    const sVal = document.getElementById('sfx-vol-val');
+    if (mVal) mVal.textContent = `${state.settings.masterVolume}%`;
+    if (bVal) bVal.textContent = `${state.settings.bgmVolume}%`;
+    if (sVal) sVal.textContent = `${state.settings.sfxVolume}%`;
 }
 
 function initAudio() {
@@ -25,8 +53,14 @@ function initAudio() {
             audioCtx.resume();
         }
         masterGain = audioCtx.createGain();
-        masterGain.gain.value = 0.3; // Global volume
         masterGain.connect(audioCtx.destination);
+        
+        bgmGain = audioCtx.createGain();
+        bgmGain.connect(masterGain);
+        
+        sfxGain = audioCtx.createGain();
+        sfxGain.connect(masterGain);
+
         isAudioInitialized = true;
         updateVolume();
         startBGM();
@@ -44,11 +78,11 @@ function playTone(freq, type, vol, duration, slide = false) {
         osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
         if (slide) osc.frequency.exponentialRampToValueAtTime(freq / 2, audioCtx.currentTime + duration);
         
-        const masterVol = (state.settings.volume / 100) * 0.1; // Baseline attenuation
-        gain.gain.setValueAtTime(vol * masterVol, audioCtx.currentTime);
+        const volScale = 0.15; // Baseline attenuation
+        gain.gain.setValueAtTime(vol * volScale, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
         osc.connect(gain);
-        gain.connect(masterGain);
+        gain.connect(sfxGain);
         osc.start();
         osc.stop(audioCtx.currentTime + duration);
     } catch(e) { console.error("Audio error", e); }
@@ -95,7 +129,7 @@ function startBGM() {
         gain.gain.value = 0.05; // Base drone volume
 
         osc.connect(gain);
-        gain.connect(masterGain);
+        gain.connect(bgmGain);
 
         try {
             osc.start();
@@ -117,6 +151,7 @@ const astralUpgrades = [
 
 // Game State
 let state = {
+    instanceId: Math.random().toString(36).substring(2, 9),
     level: 1,
     motesToNextLevel: 500, // Legacy fallback, keeping for safety
     pods: 0,
@@ -134,15 +169,20 @@ let state = {
         void_shield: 0
     },
     settings: {
-        volume: 80,
-        showParticles: true
+        masterVolume: 80,
+        bgmVolume: 80,
+        sfxVolume: 80,
+        showParticles: true,
+        screenshake: true
     },
     buildMode: { active: false, sourceId: null, targetId: null },
     buffs: {
         active: false,
         timer: 0
     },
+    companions: [],
     voidSpirits: [],
+    remnants: [],
     spiritIntervalId: null,
     burst: { active: false, x: 0, y: 0, radius: 0, maxRadius: 160, cooldown: 0, maxCooldown: 120 },
     boosts: {
@@ -163,7 +203,7 @@ let state = {
         totalMotesEarned: 0,
         upgradesBoughtThisLevel: 0
     },
-    player: {
+    player: new Proxy({
         x: 1000,
         y: 1000,
         speed: 4,
@@ -171,7 +211,16 @@ let state = {
         maxPods: 20,
         sprite: '✨',
         glowColor: 'rgba(0, 242, 255, 0.3)'
-    },
+    }, {
+        set(target, prop, value) {
+            if ((prop === 'x' || prop === 'y') && Math.abs(target[prop] - value) > 100) {
+                console.warn(`TELEPORT DETECTED: ${prop} changed from ${target[prop]} to ${value}`);
+                console.trace();
+            }
+            target[prop] = value;
+            return true;
+        }
+    }),
     world: { width: 2000, height: 2000 },
     camera: { x: 0, y: 0, lerp: 0.1 },
     joystick: { active: false, startX: 0, startY: 0, moveX: 0, moveY: 0, vector: { x: 0, y: 0 } },
@@ -179,23 +228,25 @@ let state = {
     isTouch: false,
     entities: [],
     upgrades: [
-        { id: 'speed', name: 'Swift Essence', description: 'Increase movement speed', basePrice: 20, priceMult: 1.6, level: 0, effect: (lvl) => 4 + (lvl * 0.8) },
-        { id: 'harvest', name: 'Resonant Aura', description: 'Wider harvesting range', basePrice: 50, priceMult: 1.5, level: 0, effect: (lvl) => 80 + (lvl * 20) },
-        { id: 'capacity', name: 'Void Pouch', description: 'Hold more Spore Pods', basePrice: 30, priceMult: 1.5, level: 0, effect: (lvl) => 20 + (lvl * 10) },
-        { id: 'forge_speed', name: 'Forge Resonance', description: 'Faster pod conversion', basePrice: 40, priceMult: 1.6, level: 0, effect: (lvl) => 0.5 + (lvl * 0.25) },
-        { id: 'regrowth', name: 'Nature\'s Bounty', description: 'Trees regrow faster', basePrice: 60, priceMult: 1.7, level: 0, effect: (lvl) => 0.005 + (lvl * 0.002) },
-        { id: 'wisp', name: 'Luminous Companion', description: 'Auto-harvests pods nearby', basePrice: 80, priceMult: 2.0, level: 0, effect: (lvl) => lvl },
+        { id: 'speed', name: 'Swift Essence', description: 'Increase movement speed', basePrice: 20, priceMult: 1.6, level: 0, effect: (lvl) => 4 + (lvl * 0.8), currency: 'motes' },
+        { id: 'harvest', name: 'Resonant Aura', description: 'Wider harvesting range', basePrice: 50, priceMult: 1.5, level: 0, effect: (lvl) => 80 + (lvl * 20), currency: 'motes' },
+        { id: 'capacity', name: 'Void Pouch', description: 'Hold more Spore Pods', basePrice: 30, priceMult: 1.5, level: 0, effect: (lvl) => 20 + (lvl * 10), currency: 'motes' },
+        { id: 'forge_speed', name: 'Forge Resonance', description: 'Faster pod conversion', basePrice: 40, priceMult: 1.6, level: 0, effect: (lvl) => 0.5 + (lvl * 0.25), currency: 'motes' },
+        { id: 'regrowth', name: 'Nature\'s Bounty', description: 'Trees regrow faster', basePrice: 60, priceMult: 1.7, level: 0, effect: (lvl) => 0.005 + (lvl * 0.002), currency: 'motes' },
+        { id: 'wisp', name: 'Luminous Companion', description: 'Auto-harvests pods nearby', basePrice: 80, priceMult: 2.0, level: 0, effect: (lvl) => lvl, currency: 'motes' },
         { id: 'light_weaver', name: 'Light Weaver', description: 'Unlock Light Tethers to automate harvesting', basePrice: 3, priceMult: 1.5, level: 0, effect: (lvl) => lvl, currency: 'starFragments' },
         { id: 'star_blessing', name: 'Stellar Blessing', description: 'Increases all Mote gains', basePrice: 5, priceMult: 1.8, level: 0, effect: (lvl) => 1 + (lvl * 0.5), currency: 'starFragments' },
-        { id: 'mote_magnet', name: 'Mote Magnet', description: 'Automatically pull motes from further away', basePrice: 150, priceMult: 2.0, level: 0, effect: (lvl) => 120 + (lvl * 30) },
-        { id: 'crit_harvest', name: 'Critical Bloom', description: 'Chance to get double pods', basePrice: 200, priceMult: 2.2, level: 0, effect: (lvl) => lvl * 0.05 }
+        { id: 'mote_magnet', name: 'Mote Magnet', description: 'Automatically pull motes from further away', basePrice: 150, priceMult: 2.0, level: 0, effect: (lvl) => 120 + (lvl * 30), currency: 'motes' },
+        { id: 'crit_harvest', name: 'Critical Bloom', description: 'Chance to get double pods', basePrice: 200, priceMult: 2.2, level: 0, effect: (lvl) => lvl * 0.05, currency: 'motes' },
+        { id: 'sentinel', name: 'Void Sentinel', description: 'A defensive orb that dispels spirits attacking tethers.', basePrice: 10, priceMult: 2.5, level: 0, effect: (lvl) => lvl, currency: 'starFragments' }
     ],
     cosmetics: [
         { id: 'default', name: 'Spark', icon: '✨', price: 0, unlocked: true },
         { id: 'butterfly', name: 'Faerie', icon: '🦋', price: 1000, unlocked: false },
         { id: 'fairy', name: 'Sprite', icon: '🧚', price: 5000, unlocked: false },
         { id: 'lantern', name: 'Lantern', icon: '🏮', price: 10, currency: 'starFragments', unlocked: false }
-    ]
+    ],
+    entityMap: {} // $O(1)$ lookup cache
 };
 
 // Objective Definitions
@@ -329,6 +380,11 @@ const comboFill = document.getElementById('combo-fill');
 const frenzyIndicator = document.getElementById('frenzy-indicator');
 const appEl = document.getElementById('app');
 
+function updateEntityMap() {
+    state.entityMap = {};
+    state.entities.forEach(e => state.entityMap[e.id] = e);
+}
+
 function initWorld() {
     entitiesLayer.innerHTML = '';
 
@@ -398,6 +454,7 @@ function initWorld() {
 
     gameWorld.style.width = `${state.world.width}px`;
     gameWorld.style.height = `${state.world.height}px`;
+    updateEntityMap();
     state.entities.forEach(renderEntity);
     initMinimap();
     renderTethers();
@@ -466,6 +523,7 @@ function reconnectTethers() {
         }
     }
     state.tethers = newTethers;
+    updateEntityMap(); // Entities changed
     renderTethers();
 }
 
@@ -681,6 +739,8 @@ function update() {
     updateWisps();
     updateMinimap();
     updateSpirits();
+    updateRemnants();
+    updateCompanions();
 
     if (state.burst.cooldown > 0) {
         state.burst.cooldown--;
@@ -706,11 +766,12 @@ function updateAmbient() {
     playTone(freq, 'sine', 0.2, 3.0, false); // Long, soft fade
 }
 
-function triggerShake(intensity = 'medium') {
-    const world = document.getElementById('game-world');
-    if (!world) return;
-    world.classList.add('shake');
-    setTimeout(() => world.classList.remove('shake'), 300);
+function triggerShake() {
+    if (!state.settings.screenshake) return;
+    const viewport = document.querySelector('.world-viewport');
+    if (!viewport) return;
+    viewport.classList.add('shake');
+    setTimeout(() => viewport.classList.remove('shake'), 300);
 }
 
 function updatePlayerGlow() {
@@ -957,17 +1018,63 @@ function createSellParticle(startX, startY, targetX, targetY) {
 function renderTethers() {
     if (!svgLayer) return;
     svgLayer.innerHTML = '';
+    
+    // Ensure map is current
+    updateEntityMap();
+
     state.tethers.forEach(t => {
-        const src = state.entities.find(e => e.id === t.sourceId);
-        const tgt = state.entities.find(e => e.id === t.targetId);
+        const src = state.entityMap[t.sourceId];
+        const tgt = state.entityMap[t.targetId];
+        if (src && tgt) {
+            // Cache coordinates for $O(1)$ collision checks
+            t.x1 = src.x; t.y1 = src.y;
+            t.x2 = tgt.x; t.y2 = tgt.y;
+
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', t.x1);
+            line.setAttribute('y1', t.y1);
+            line.setAttribute('x2', t.x2);
+            line.setAttribute('y2', t.y2);
+            
+            // Visual feedback for health
+            const healthPct = (t.health / t.maxHealth);
+            line.style.stroke = healthPct < 0.3 ? '#ff4444' : (healthPct < 0.6 ? '#ffaa00' : 'var(--neon-cyan)');
+            line.style.strokeWidth = 2;
+            line.style.opacity = 0.3 + (healthPct * 0.5);
+            if (healthPct < 0.3) line.classList.add('glitch');
+
+            svgLayer.appendChild(line);
+        }
+    });
+
+    state.remnants.forEach(r => {
+        const src = state.entityMap[r.sourceId];
+        const tgt = state.entityMap[r.targetId];
         if (src && tgt) {
             const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             line.setAttribute('x1', src.x);
             line.setAttribute('y1', src.y);
             line.setAttribute('x2', tgt.x);
             line.setAttribute('y2', tgt.y);
-            line.setAttribute('class', 'tether-line');
+            
+            line.style.stroke = 'rgba(255, 255, 255, 0.2)';
+            line.style.strokeWidth = 1;
+            line.style.strokeDasharray = '5,5';
+            line.style.opacity = 0.5;
+
             svgLayer.appendChild(line);
+
+            // Add a small pulse at the source tree to indicate recovery is possible
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', src.x);
+            circle.setAttribute('cy', src.y);
+            circle.setAttribute('r', 15);
+            circle.style.fill = 'none';
+            circle.style.stroke = 'var(--neon-gold)';
+            circle.style.strokeWidth = 2;
+            circle.style.opacity = 0.6;
+            circle.classList.add('remnant-pulse');
+            svgLayer.appendChild(circle);
         }
     });
 }
@@ -983,14 +1090,14 @@ function tetherHarvest() {
     const tetherBonus = 1 + (state.sparkUpgrades.tether_mastery ? 0.25 : 0);
 
     state.tethers.forEach(t => {
-        const src = state.entities.find(e => e.id === t.sourceId);
+        const src = state.entityMap[t.sourceId];
         if (src && src.pods > 0.5) {
             const amount = Math.min(0.5, src.pods) * tetherBonus;
             src.pods -= amount;
             totalHarvested += amount;
             if (Math.random() > 0.5) {
-                const tgt = state.entities.find(e => e.id === t.targetId);
-                createSellParticle(src.x, src.y, tgt.x, tgt.y);
+                const tgt = state.entityMap[t.targetId];
+                if (tgt) createSellParticle(src.x, src.y, tgt.x, tgt.y);
             }
         }
     });
@@ -1061,6 +1168,34 @@ function updateHUD(type = null) {
         }
     }
 
+    const weaverLevel = state.upgrades.find(u => u.id === 'light_weaver').level;
+    if (weaverLevel > 0) {
+        if (buildToggle.style.display !== 'flex') buildToggle.style.display = 'flex';
+        
+        // Ensure structure is intact if it was wiped
+        if (!buildToggle.querySelector('.btn-label')) {
+            buildToggle.innerHTML = `<span class="btn-icon">🔗</span> <span class="btn-label">Tether</span> <span id="tether-count"></span>`;
+        }
+
+        const countEl = document.getElementById('tether-count');
+        const labelEl = buildToggle.querySelector('.btn-label');
+        
+        if (countEl) {
+            const tetherCountText = `${state.tethers.length}/${weaverLevel}`;
+            if (countEl.textContent !== tetherCountText) countEl.textContent = tetherCountText;
+        }
+
+        if (labelEl) {
+            const desiredLabel = state.buildMode.active ? (state.buildMode.sourceId ? "SELECT FORGE" : "SELECT TREE") : "TETHER";
+            if (labelEl.textContent !== desiredLabel) labelEl.textContent = desiredLabel;
+        }
+
+        buildToggle.classList.toggle('active-mode', state.buildMode.active);
+        buildToggle.style.background = state.buildMode.active ? 'rgba(0, 255, 128, 0.6)' : 'rgba(0, 255, 128, 0.2)';
+    } else {
+        if (buildToggle.style.display !== 'none') buildToggle.style.display = 'none';
+    }
+
     if (state.sparks > 0) {
         if (sparksItem && sparksItem.style.display !== 'flex') sparksItem.style.display = 'flex';
         if (sparksCount.textContent != state.sparks) {
@@ -1092,7 +1227,17 @@ function updateHUD(type = null) {
 
 function renderUpgrades() {
     upgradeList.innerHTML = '';
+    
+    // Update tab button visual state
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.currency === activeUpgradeTab);
+    });
+
     state.upgrades.forEach(upgrade => {
+        // Filter by active tab (fallback to 'motes' if currency is missing)
+        const currency = upgrade.currency || 'motes';
+        if (currency !== activeUpgradeTab) return;
+
         const cost = Math.floor(upgrade.basePrice * Math.pow(upgrade.priceMult, upgrade.level));
         const currencySym = upgrade.currency === 'starFragments' ? '🌟' : '✨';
         const canAfford = upgrade.currency === 'starFragments' ? state.starFragments >= cost : state.motes >= cost;
@@ -1102,7 +1247,20 @@ function renderUpgrades() {
 
         const card = document.createElement('div');
         card.className = 'upgrade-card glass';
-        card.innerHTML = `<div><h3>${upgrade.name} (Lv. ${upgrade.level})</h3><p>${upgrade.description}</p></div><button class="upgrade-btn" style="${upgrade.currency === 'starFragments' ? 'background: #b8860b;' : ''}" ${canAfford ? '' : 'disabled'} data-id="${upgrade.id}">${cost} ${currencySym}</button>`;
+        
+        // Companion Limit Logic
+        let displayCost = cost;
+        let btnText = `${displayCost} ${currencySym}`;
+        let isLimitReached = false;
+        if (upgrade.id === 'sentinel') {
+            const weaverLevel = state.upgrades.find(u => u.id === 'light_weaver').level;
+            if (upgrade.level >= weaverLevel) {
+                isLimitReached = true;
+                btnText = "Tether Limit Reached";
+            }
+        }
+
+        card.innerHTML = `<div><h3>${upgrade.name} (Lv. ${upgrade.level})</h3><p>${upgrade.description}</p></div><button class="upgrade-btn" style="${upgrade.currency === 'starFragments' ? 'background: #b8860b;' : ''}" ${canAfford && !isLimitReached ? '' : 'disabled'} data-id="${upgrade.id}">${btnText}</button>`;
         upgradeList.appendChild(card);
     });
 }
@@ -1111,27 +1269,39 @@ function buyUpgrade(id) {
     const upgrade = state.upgrades.find(u => u.id === id);
     const cost = Math.floor(upgrade.basePrice * Math.pow(upgrade.priceMult, upgrade.level));
 
+    console.log(`Attempting purchase: ${upgrade.name}. Current Level: ${upgrade.level}. Cost: ${cost}. Current Motes: ${state.motes}`);
+
     if (upgrade.currency === 'starFragments') {
         if (state.starFragments >= cost) {
             state.starFragments -= cost;
             upgrade.level++;
             state.stats.upgradesBoughtThisLevel++;
+            applyUpgradeEffects(upgrade);
             updateHUD(); renderUpgrades(); saveGame();
+            console.log(`Purchase Success: ${upgrade.name}. New Level: ${upgrade.level}`);
         }
     } else {
         if (state.motes >= cost) {
             state.motes -= cost;
             upgrade.level++;
             state.stats.upgradesBoughtThisLevel++;
-
-            // Re-calculate stats with permanent bonuses
-            const speedBonus = 1 + (state.sparkUpgrades.luminous_stride ? 0.15 : 0);
-            const capBonus = state.sparkUpgrades.celestial_pockets ? 50 : 0;
-
-            if (upgrade.id === 'speed') state.player.speed = upgrade.effect(upgrade.level) * speedBonus;
-            else if (upgrade.id === 'capacity') state.player.maxPods = upgrade.effect(upgrade.level) + capBonus;
+            applyUpgradeEffects(upgrade);
             updateHUD(); renderUpgrades(); saveGame();
+            console.log(`Purchase Success: ${upgrade.name}. New Level: ${upgrade.level}`);
         }
+    }
+}
+
+function applyUpgradeEffects(upgrade) {
+    const speedBonus = 1 + (state.sparkUpgrades.luminous_stride ? 0.15 : 0);
+    const capBonus = state.sparkUpgrades.celestial_pockets ? 50 : 0;
+
+    if (upgrade.id === 'speed') state.player.speed = upgrade.effect(upgrade.level) * speedBonus;
+    else if (upgrade.id === 'capacity') state.player.maxPods = upgrade.effect(upgrade.level) + capBonus;
+    else if (upgrade.id === 'sentinel') {
+        const newCompanion = { id: Date.now(), x: state.player.x, y: state.player.y };
+        state.companions.push(newCompanion);
+        spawnCompanionElement(newCompanion);
     }
 }
 
@@ -1280,80 +1450,180 @@ function beginJourney() {
     setTimeout(() => playTone(500, 'sine', 1.5, 0.8), 400);
 }
 
-let isWiping = false;
+const SAVE_VERSION = 2.2;
+
+function migrateSaveData(data) {
+    if (!data) return {};
+    
+    // Always ensure keys exist, regardless of version
+    if (!data.upgrades) data.upgrades = [];
+    if (!data.sparkUpgrades) data.sparkUpgrades = {};
+    if (!data.stats) data.stats = { totalPodsHarvested: 0, totalStarsHarvested: 0, totalMotesEarned: 0, upgradesBoughtThisLevel: 0 };
+    if (!data.entities) data.entities = [];
+    if (!data.tethers) data.tethers = [];
+    if (!data.remnants) data.remnants = [];
+    if (!data.companions) data.companions = [];
+    if (!data.settings) data.settings = { masterVolume: 80, bgmVolume: 80, sfxVolume: 80, showParticles: true, screenshake: true };
+        
+    // Handle volume migration from old 'volume' field
+    if (data.settings.volume !== undefined && data.settings.masterVolume === undefined) {
+        data.settings.masterVolume = data.settings.volume;
+        data.settings.bgmVolume = data.settings.volume;
+        data.settings.sfxVolume = data.settings.volume;
+    }
+    
+    // Ensure defaults for new fields (and existing ones if they somehow got lost)
+    if (data.settings.masterVolume === undefined) data.settings.masterVolume = 80;
+    if (data.settings.bgmVolume === undefined) data.settings.bgmVolume = 80;
+    if (data.settings.sfxVolume === undefined) data.settings.sfxVolume = 80;
+    if (data.settings.showParticles === undefined) data.settings.showParticles = true; // Ensure this exists too
+    if (data.settings.screenshake === undefined) data.settings.screenshake = true;
+
+    if (!data.version || data.version < SAVE_VERSION) {
+        console.log(`Migrating save from ${data.version || 'none'} to ${SAVE_VERSION}...`);
+        data.version = SAVE_VERSION;
+    }
+    return data;
+}
 
 function saveGame() {
-    if (isWiping) return; // Don't save if we are hard resetting
+    if (isWiping) return;
 
-    const saveData = {
-        level: state.level, world: state.world,
-        pods: state.pods, motes: state.motes, starFragments: state.starFragments, sparks: state.sparks, player: { x: state.player.x, y: state.player.y, sprite: state.player.sprite },
-        stats: state.stats, buffs: state.buffs, tethers: state.tethers,
-        upgrades: state.upgrades.map(u => ({ id: u.id, level: u.level })),
-        sparkUpgrades: state.sparkUpgrades,
-        cosmetics: state.cosmetics.map(c => ({ id: c.id, unlocked: c.unlocked })),
-        entities: state.entities
-    };
-    localStorage.setItem('lushHarvestSave', JSON.stringify(saveData));
+    try {
+        console.log("Saving game state...");
+        const saveData = {
+            version: SAVE_VERSION,
+            instanceId: state.instanceId,
+            lastModified: Date.now(),
+            level: state.level,
+            world: state.world,
+            pods: Number(state.pods),
+            motes: Number(state.motes),
+            starFragments: Number(state.starFragments),
+            sparks: Number(state.sparks),
+            player: { x: state.player.x, y: state.player.y, sprite: state.player.sprite },
+            stats: state.stats,
+            settings: state.settings,
+            buffs: state.buffs,
+            upgrades: state.upgrades.map(u => ({ id: u.id, level: Number(u.level) || 0 })),
+            sparkUpgrades: state.sparkUpgrades,
+            cosmetics: state.cosmetics.map(c => ({ id: c.id, unlocked: !!c.unlocked })),
+            tethers: state.tethers.map(t => ({ sourceId: t.sourceId, targetId: t.targetId, health: t.health, maxHealth: t.maxHealth })),
+            remnants: state.remnants.map(r => ({ sourceId: r.sourceId, targetId: r.targetId, maxHealth: r.maxHealth })),
+            entities: state.entities.map(e => {
+                const { el, ...cleanE } = e;
+                return cleanE;
+            })
+        };
+
+        // Extra safety: manual check for circular or broken refs
+        const json = JSON.stringify(saveData, (key, value) => {
+            if (key === 'el') return undefined; // Should already be gone, but extra safety
+            return value;
+        });
+        
+        localStorage.setItem('lushHarvestSave', json);
+        console.log(`Save Successful! Size: ${json.length} chars. Motes: ${saveData.motes}`);
+    } catch (e) {
+        console.error("CRITICAL SAVE ERROR:", e);
+    }
 }
 
 function loadGame() {
+    console.group("Lush Harvest: Loading Save");
     try {
         const saved = localStorage.getItem('lushHarvestSave');
-        if (saved) {
-            const parsed = JSON.parse(saved);
-            if (typeof parsed.level === 'number') state.level = parsed.level;
-            if (typeof parsed.motesToNextLevel === 'number') state.motesToNextLevel = parsed.motesToNextLevel;
-            if (parsed.world) state.world = parsed.world;
-            if (Array.isArray(parsed.entities)) state.entities = parsed.entities;
-            state.pods = parsed.pods || 0;
-            state.motes = parsed.motes || 0;
-            state.starFragments = parsed.starFragments || 0;
-            state.sparks = parsed.sparks || 0;
-            state.tethers = parsed.tethers || [];
-            if (parsed.buffs) state.buffs = parsed.buffs;
-            if (parsed.stats) {
-                state.stats.totalPodsHarvested = typeof parsed.stats.totalPodsHarvested === 'number' ? parsed.stats.totalPodsHarvested : 0;
-                state.stats.totalStarsHarvested = typeof parsed.stats.totalStarsHarvested === 'number' ? parsed.stats.totalStarsHarvested : 0;
-                state.stats.totalMotesEarned = typeof parsed.stats.totalMotesEarned === 'number' ? parsed.stats.totalMotesEarned : 0;
-                state.stats.upgradesBoughtThisLevel = typeof parsed.stats.upgradesBoughtThisLevel === 'number' ? parsed.stats.upgradesBoughtThisLevel : 0;
-            }
-
-            if (parsed.player && typeof parsed.player.x === 'number') {
-                state.player.x = parsed.player.x; state.player.y = parsed.player.y;
-                if (parsed.player.sprite) state.player.sprite = parsed.player.sprite;
-            }
-
-            if (parsed.upgrades) {
-                parsed.upgrades.forEach(savedUpgrade => {
-                    const u = state.upgrades.find(upg => upg.id === savedUpgrade.id);
-                    if (u) u.level = savedUpgrade.level;
-                });
-            }
-
-            if (parsed.cosmetics) {
-                parsed.cosmetics.forEach(savedCos => {
-                    const c = state.cosmetics.find(cos => cos.id === savedCos.id);
-                    if (c) c.unlocked = savedCos.unlocked;
-                });
-            }
-
-            if (parsed.sparkUpgrades) state.sparkUpgrades = parsed.sparkUpgrades;
-            // Removed permanent astralToggle visibility check as requested
-
-            // Apply permanent bonuses to base stats
-            const speedBonus = 1 + (state.sparkUpgrades.luminous_stride ? 0.15 : 0);
-            const capBonus = state.sparkUpgrades.celestial_pockets ? 50 : 0;
-
-            state.player.speed = state.upgrades.find(u => u.id === 'speed').effect(state.upgrades.find(u => u.id === 'speed').level) * speedBonus;
-            state.player.maxPods = state.upgrades.find(u => u.id === 'capacity').effect(state.upgrades.find(u => u.id === 'capacity').level) + capBonus;
+        if (!saved) {
+            console.log("No save file discovered.");
+            console.groupEnd();
+            return;
         }
-    } catch (error) {
-        console.error("Save file corrupted. Wiping save.", error);
-        localStorage.removeItem('lushHarvestSave');
+
+        let parsed = JSON.parse(saved);
+        console.log("Raw Loaded Data:", parsed);
+        
+        parsed = migrateSaveData(parsed);
+
+        // State Reconstruction
+        if (typeof parsed.level === 'number') state.level = parsed.level;
+        if (parsed.world) state.world = { ...state.world, ...parsed.world };
+        
+        state.pods = parsed.pods !== undefined ? Number(parsed.pods) : 0;
+        state.motes = parsed.motes !== undefined ? Number(parsed.motes) : 0;
+        state.starFragments = parsed.starFragments !== undefined ? Number(parsed.starFragments) : 0;
+        state.sparks = parsed.sparks !== undefined ? Number(parsed.sparks) : 0;
+
+        if (parsed.stats) state.stats = { ...state.stats, ...parsed.stats };
+        if (parsed.settings) {
+            state.settings = { ...state.settings, ...parsed.settings };
+            // Apply UI settings
+            const mVol = document.getElementById('master-volume-control');
+            const bVol = document.getElementById('bgm-volume-control');
+            const sVol = document.getElementById('sfx-volume-control');
+            const part = document.getElementById('particles-toggle');
+            const shake = document.getElementById('shake-toggle');
+            
+            if (mVol) mVol.value = state.settings.masterVolume;
+            if (bVol) bVol.value = state.settings.bgmVolume;
+            if (sVol) sVol.value = state.settings.sfxVolume;
+            if (part) part.checked = state.settings.showParticles;
+            if (shake) shake.checked = state.settings.screenshake;
+            updateVolume();
+        }
+
+        if (parsed.player) {
+            state.player.x = parsed.player.x !== undefined ? Number(parsed.player.x) : state.player.x;
+            state.player.y = parsed.player.y !== undefined ? Number(parsed.player.y) : state.player.y;
+            state.player.sprite = parsed.player.sprite || state.player.sprite;
+        }
+
+        if (Array.isArray(parsed.upgrades)) {
+            parsed.upgrades.forEach(saveU => {
+                const u = state.upgrades.find(upg => upg.id === saveU.id);
+                if (u && saveU.level !== undefined) u.level = Number(saveU.level);
+            });
+        }
+
+        if (parsed.sparkUpgrades) {
+            state.sparkUpgrades = { ...state.sparkUpgrades, ...parsed.sparkUpgrades };
+        }
+
+        if (Array.isArray(parsed.cosmetics)) {
+            parsed.cosmetics.forEach(saveC => {
+                const c = state.cosmetics.find(cos => cos.id === saveC.id);
+                if (c) c.unlocked = !!saveC.unlocked;
+            });
+        }
+
+        if (Array.isArray(parsed.entities)) state.entities = parsed.entities;
+        if (Array.isArray(parsed.tethers)) state.tethers = parsed.tethers;
+        if (Array.isArray(parsed.remnants)) state.remnants = parsed.remnants;
+
+        // Restore companions (these need DOM elements)
+        if (Array.isArray(parsed.companions)) {
+            state.companions = parsed.companions;
+            state.companions.forEach(c => spawnCompanionElement(c));
+        }
+
+        // Apply permanent bonuses
+        const speedBonus = 1 + (Number(state.sparkUpgrades.luminous_stride) ? 0.15 : 0);
+        const capBonus = Number(state.sparkUpgrades.celestial_pockets) ? 50 : 0;
+        const speedU = state.upgrades.find(u => u.id === 'speed');
+        const capU = state.upgrades.find(u => u.id === 'capacity');
+        
+        state.player.speed = (speedU ? speedU.effect(speedU.level) : 4) * speedBonus;
+        state.player.maxPods = (capU ? capU.effect(capU.level) : 20) + capBonus;
+
+        console.log("Load Applied. Motes:", state.motes, "Upgrades:", state.upgrades.map(u => u.level));
+    } catch (e) {
+        console.error("CRITICAL LOAD ERROR:", e);
     }
+    console.groupEnd();
+
     updateWorldColors();
     renderTethers();
+    updateHUD();
+    renderUpgrades();
 }
 
 setInterval(saveGame, 5000);
@@ -1399,7 +1669,8 @@ buildToggle.addEventListener('click', () => {
             }
             if (closestTree) {
                 if (state.tethers.find(t => t.sourceId === closestTree.id)) {
-                    buildToggle.textContent = "Already tethered!";
+                    const label = buildToggle.querySelector('.btn-label');
+                    if (label) label.textContent = "ALREADY TETHERED!";
                     setTimeout(updateHUD, 1000);
                     state.buildMode.active = false;
                     return;
@@ -1415,7 +1686,12 @@ buildToggle.addEventListener('click', () => {
             const forge = state.entities.find(e => e.type === 'forge');
             const dist = Math.sqrt(Math.pow(forge.x - state.player.x, 2) + Math.pow(forge.y - state.player.y, 2));
             if (dist < 200) {
-                state.tethers.push({ sourceId: state.buildMode.sourceId, targetId: forge.id });
+                state.tethers.push({ 
+                    sourceId: state.buildMode.sourceId, 
+                    targetId: forge.id,
+                    health: 100,
+                    maxHealth: 100
+                });
                 state.buildMode.active = false;
                 renderTethers();
                 playTone(800, 'sine', 0.5, 0.5);
@@ -1438,16 +1714,46 @@ document.addEventListener('DOMContentLoaded', () => {
     closeSettings.onclick = () => { settingsPanel.classList.remove('active'); settingsMsg.textContent = ''; };
     menuSettingsBtn.onclick = () => { settingsPanel.classList.add('active'); settingsMsg.textContent = ''; };
 
-    const volumeControl = document.getElementById('volume-control');
-    volumeControl.oninput = (e) => {
-        state.settings.volume = parseInt(e.target.value);
-        updateVolume();
-    };
+    const masterVol = document.getElementById('master-volume-control');
+    if (masterVol) {
+        masterVol.oninput = (e) => {
+            state.settings.masterVolume = parseInt(e.target.value);
+            updateVolume();
+            saveGame();
+        };
+    }
+
+    const bgmVol = document.getElementById('bgm-volume-control');
+    if (bgmVol) {
+        bgmVol.oninput = (e) => {
+            state.settings.bgmVolume = parseInt(e.target.value);
+            updateVolume();
+            saveGame();
+        };
+    }
+
+    const sfxVol = document.getElementById('sfx-volume-control');
+    if (sfxVol) {
+        sfxVol.oninput = (e) => {
+            state.settings.sfxVolume = parseInt(e.target.value);
+            updateVolume();
+            saveGame();
+        };
+    }
 
     const particlesToggle = document.getElementById('particles-toggle');
     particlesToggle.onchange = (e) => {
         state.settings.showParticles = e.target.checked;
+        saveGame();
     };
+
+    const shakeToggle = document.getElementById('shake-toggle');
+    if (shakeToggle) {
+        shakeToggle.onchange = (e) => {
+            state.settings.screenshake = e.target.checked;
+            saveGame();
+        };
+    }
 
     startGameBtn.onclick = () => {
         initAudio();
@@ -1578,6 +1884,9 @@ function triggerBurst() {
 }
 
 function spawnVoidSpirit() {
+    // Prevent spawning if tab is inactive
+    if (document.hidden) return;
+
     // Only spawn spirits if player has reached Area 3+ or has high motes
     if (state.level < 2 && state.motes < 1000) return;
 
@@ -1603,6 +1912,8 @@ function spawnVoidSpirit() {
 }
 
 function updateSpirits() {
+    const threatenedPoints = []; // List of points companions should move toward
+    
     state.voidSpirits = state.voidSpirits.filter(s => {
         if (s.dispelling) {
             s.el.style.opacity = parseFloat(s.el.style.opacity || 1) - 0.1;
@@ -1613,30 +1924,69 @@ function updateSpirits() {
             return true;
         }
 
-        // Move toward player OR nearest tether
-        let target = { x: state.player.x, y: state.player.y };
-        let minDist = Math.sqrt(Math.pow(s.x - target.x, 2) + Math.pow(s.y - target.y, 2));
-
-        state.tethers.forEach(t => {
-            const src = state.entities.find(e => e.id === t.sourceId);
-            if (src) {
-                const d = Math.sqrt(Math.pow(s.x - src.x, 2) + Math.pow(s.y - src.y, 2));
-                if (d < minDist) { minDist = d; target = { x: src.x, y: src.y }; }
+        // Check for collision with tethers
+        let damagedTether = false;
+        for (let i = 0; i < state.tethers.length; i++) {
+            const t = state.tethers[i];
+            // Use cached coordinates if available
+            const x1 = t.x1 || 0, y1 = t.y1 || 0, x2 = t.x2 || 0, y2 = t.y2 || 0;
+            
+            // Fast bounding box check (optional but helper)
+            const minX = Math.min(x1, x2) - 30;
+            const maxX = Math.max(x1, x2) + 30;
+            const minY = Math.min(y1, y2) - 30;
+            const maxY = Math.max(y1, y2) + 30;
+            
+            if (s.x > minX && s.x < maxX && s.y > minY && s.y < maxY) {
+                const dist = getDistToSegment(s.x, s.y, x1, y1, x2, y2);
+                if (dist < 25) {
+                    t.health -= 5;
+                    s.dispelling = true;
+                    damagedTether = true;
+                    playTone(200, 'sine', 0.2, 0.1);
+                    if (t.health <= 0) {
+                        state.remnants.push({
+                            sourceId: t.sourceId,
+                            targetId: t.targetId,
+                            maxHealth: t.maxHealth
+                        });
+                        state.tethers.splice(i, 1);
+                        playTone(100, 'sawtooth', 0.4, 0.5);
+                        renderTethers();
+                    }
+                    break; // Exit tether loop for this spirit
+                } else if (dist < 250) {
+                    // Spirit is a threat to this tether, mark for companions
+                    threatenedPoints.push({ x: s.x, y: s.y, spirit: s });
+                }
             }
-        });
+        }
 
-        const dx = target.x - s.x;
-        const dy = target.y - s.y;
-        const angle = Math.atan2(dy, dx);
-        s.x += Math.cos(angle) * s.speed;
-        s.y += Math.sin(angle) * s.speed;
+        if (damagedTether) return true;
+
+        // Move toward player OR nearest tree (tether source)
+        let targetX = state.player.x;
+        let targetY = state.player.y;
+        let minSqDist = Math.pow(s.x - targetX, 2) + Math.pow(s.y - targetY, 2);
+
+        for (const t of state.tethers) {
+            const dSq = Math.pow(s.x - (t.x1 || 0), 2) + Math.pow(s.y - (t.y1 || 0), 2);
+            if (dSq < minSqDist) { minSqDist = dSq; targetX = t.x1; targetY = t.y1; }
+        }
+
+        const dx = targetX - s.x;
+        const dy = targetY - s.y;
+        const dist = Math.sqrt(minSqDist);
+        if (dist > 1) {
+            s.x += (dx / dist) * s.speed;
+            s.y += (dy / dist) * s.speed;
+        }
 
         s.el.style.left = `${s.x - 20}px`;
         s.el.style.top = `${s.y - 20}px`;
 
         // Collision with player
-        if (minDist < 30 && target.x === state.player.x) {
-            // Void Shield bonus: Chance to ignore hit (or just reduce penalty)
+        if (dist < 30 && targetX === state.player.x) {
             const damage = state.sparkUpgrades.void_shield ? 2 : 5;
             state.pods = Math.max(0, state.pods - damage);
             s.dispelling = true;
@@ -1644,14 +1994,116 @@ function updateSpirits() {
             updateHUD();
         }
 
-        // Collision with tree/tether
-        if (minDist < 40 && target.x !== state.player.x) {
-            // "Dim" the tree for a moment (visual only for now, could disable tether)
-            s.dispelling = true;
-            playTone(200, 'sine', 0.4, 0.2);
+        return true;
+    });
+
+    state._threats = threatenedPoints; // Store for updateCompanions
+}
+
+function updateRemnants() {
+    state.remnants = state.remnants.filter(r => {
+        const src = state.entities.find(e => e.id === r.sourceId);
+        if (!src) return false;
+
+        const dist = Math.sqrt(Math.pow(state.player.x - src.x, 2) + Math.pow(state.player.y - src.y, 2));
+        if (dist < 60) {
+            // Recover tether
+            state.tethers.push({
+                sourceId: r.sourceId,
+                targetId: r.targetId,
+                health: r.maxHealth * 0.5, // Recover with 50% health
+                maxHealth: r.maxHealth
+            });
+            playTone(800, 'sine', 0.5, 0.3);
+            createHarvestParticle(src.x, src.y, true);
+            renderTethers();
+            return false;
+        }
+        return true;
+    });
+}
+
+function getDistToSegment(px, py, x1, y1, x2, y2) {
+    const l2 = Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2);
+    if (l2 === 0) return Math.sqrt(Math.pow(px - x1, 2) + Math.pow(py - y1, 2));
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.sqrt(Math.pow(px - (x1 + t * (x2 - x1)), 2) + Math.pow(py - (y1 + t * (y2 - y1)), 2));
+}
+
+function spawnCompanionElement(companion) {
+    const el = document.createElement('div');
+    el.className = 'companion sentinel glass';
+    el.id = `companion-${companion.id}`;
+    el.innerHTML = '🛡️';
+    el.style.position = 'absolute';
+    el.style.width = '30px';
+    el.style.height = '30px';
+    el.style.display = 'flex';
+    el.style.alignItems = 'center';
+    el.style.justifyContent = 'center';
+    el.style.borderRadius = '50%';
+    el.style.zIndex = '50';
+    el.style.pointerEvents = 'none';
+    el.style.boxShadow = '0 0 15px var(--neon-cyan)';
+    entitiesLayer.appendChild(el); // FIXED: Changed from world to entitiesLayer
+    companion.el = el;
+}
+
+function updateCompanions() {
+    const threats = state._threats || [];
+    
+    state.companions.forEach((c, index) => {
+        // AI Logic: Find nearest spirit from the threat list (already filtered)
+        let targetSpirit = null;
+        let minSqDist = 160000; // 400^2
+
+        for (const t of threats) {
+            if (t.spirit.dispelling) continue;
+            const dSq = Math.pow(c.x - t.x, 2) + Math.pow(c.y - t.y, 2);
+            if (dSq < minSqDist) { minSqDist = dSq; targetSpirit = t.spirit; }
         }
 
-        return true;
+        // Idle Behavior: Patrol between active tethers or follow player
+        let targetX = state.player.x;
+        let targetY = state.player.y;
+
+        if (targetSpirit) {
+            targetX = targetSpirit.x;
+            targetY = targetSpirit.y;
+            // Collision with spirit
+            if (minSqDist < 1600) { // 40^2
+                targetSpirit.dispelling = true;
+                playTone(600, 'sine', 0.2, 0.1);
+            }
+        } else if (state.tethers.length > 0) {
+            const tetherIndex = (Math.floor(Date.now() / 3000) + index) % state.tethers.length;
+            const t = state.tethers[tetherIndex];
+            if (t.x1 !== undefined) {
+                const angle = (Date.now() / 1000) + (index * Math.PI * 2 / state.companions.length);
+                targetX = t.x1 + Math.cos(angle) * 60;
+                targetY = t.y1 + Math.sin(angle) * 60;
+            }
+        } else {
+            const angle = (Date.now() / 1000) + (index * Math.PI * 2 / state.companions.length);
+            targetX = state.player.x + Math.cos(angle) * 50;
+            targetY = state.player.y + Math.sin(angle) * 50;
+        }
+
+        const dx = targetX - c.x;
+        const dy = targetY - c.y;
+        const dSq = dx * dx + dy * dy;
+        if (dSq > 4) {
+            const speed = targetSpirit ? 6 : 3;
+            const dist = Math.sqrt(dSq);
+            c.x += (dx / dist) * speed;
+            c.y += (dy / dist) * speed;
+        }
+
+        if (c.el) {
+            c.el.style.left = `${c.x - 15}px`;
+            c.el.style.top = `${c.y - 15}px`;
+        }
     });
 }
 
@@ -1670,6 +2122,14 @@ function updateBurstUI() {
 }
 
 loadGame(); initWorld(); updateHUD(); update();
+
+// Handle Shop Tabs
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.onclick = () => {
+        activeUpgradeTab = btn.dataset.currency;
+        renderUpgrades();
+    };
+});
 
 // Handle Boost Toggle UI
 document.getElementById('boosts-toggle').onclick = () => {
@@ -1811,3 +2271,34 @@ setInterval(updateBoosts, 1000);
 // Debug / Cheat Access
 window.state = state;
 window.updateHUD = updateHUD;
+window.saveGame = saveGame;
+window.checkSaveIntegrity = () => {
+    const raw = localStorage.getItem('lushHarvestSave');
+    console.group("Save Data Diagnostic");
+    console.log("Raw Length:", raw?.length || 0);
+    try {
+        const parsed = JSON.parse(raw);
+        console.log("Parsed Version:", parsed.version);
+        console.log("Motes in File:", parsed.motes);
+        console.log("Upgrades in File:", parsed.upgrades?.length || 0);
+        console.log("Entities in File:", parsed.entities?.length || 0);
+    } catch(e) {
+        console.error("Save Corrupted or Missing:", e);
+    }
+    console.groupEnd();
+};
+
+// Multi-tab Sync
+window.addEventListener('storage', (e) => {
+    if (e.key === 'lushHarvestSave' && e.newValue) {
+        try {
+            const data = JSON.parse(e.newValue);
+            if (data && data.instanceId !== state.instanceId) {
+                console.log(`Syncing progress from Tab ${data.instanceId}...`);
+                loadGame();
+            }
+        } catch(err) {
+            console.warn("Storage sync failed:", err);
+        }
+    }
+});
