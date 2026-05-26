@@ -12,19 +12,19 @@ let activeUpgradeTab = 'motes'; // Default tab
 
 function updateVolume() {
     if (!audioCtx) return;
-    
+
     // Master Gain (attenuation factor)
     const masterBase = (state.settings.masterVolume ?? state.settings.volume ?? 80) / 100;
     if (masterGain) {
         masterGain.gain.setTargetAtTime(masterBase * 0.4, audioCtx.currentTime, 0.1);
     }
-    
+
     // BGM Gain
     if (bgmGain) {
         const bgmBase = (state.settings.bgmVolume ?? 80) / 100;
         bgmGain.gain.setTargetAtTime(bgmBase, audioCtx.currentTime, 0.1);
     }
-    
+
     // SFX Gain
     if (sfxGain) {
         const sfxBase = (state.settings.sfxVolume ?? 80) / 100;
@@ -54,10 +54,10 @@ function initAudio() {
         }
         masterGain = audioCtx.createGain();
         masterGain.connect(audioCtx.destination);
-        
+
         bgmGain = audioCtx.createGain();
         bgmGain.connect(masterGain);
-        
+
         sfxGain = audioCtx.createGain();
         sfxGain.connect(masterGain);
 
@@ -77,7 +77,7 @@ function playTone(freq, type, vol, duration, slide = false) {
         osc.type = type;
         osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
         if (slide) osc.frequency.exponentialRampToValueAtTime(freq / 2, audioCtx.currentTime + duration);
-        
+
         const volScale = 0.15; // Baseline attenuation
         gain.gain.setValueAtTime(vol * volScale, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
@@ -85,7 +85,7 @@ function playTone(freq, type, vol, duration, slide = false) {
         gain.connect(sfxGain);
         osc.start();
         osc.stop(audioCtx.currentTime + duration);
-    } catch(e) { console.error("Audio error", e); }
+    } catch (e) { console.error("Audio error", e); }
 }
 
 function playHarvestSound() {
@@ -246,7 +246,8 @@ let state = {
         { id: 'fairy', name: 'Sprite', icon: '🧚', price: 5000, unlocked: false },
         { id: 'lantern', name: 'Lantern', icon: '🏮', price: 10, currency: 'starFragments', unlocked: false }
     ],
-    entityMap: {} // $O(1)$ lookup cache
+    entityMap: {}, // $O(1)$ lookup cache
+    activeSpiritType: 'glimmer' // Randomized every 5 levels
 };
 
 // Objective Definitions
@@ -385,6 +386,18 @@ function updateEntityMap() {
     state.entities.forEach(e => state.entityMap[e.id] = e);
 }
 
+function randomizeSpiritType() {
+    const types = ['glimmer', 'creeper', 'flare', 'shade'];
+    // Randomly select a type that is different from the current one if possible
+    let newType;
+    do {
+        newType = types[Math.floor(Math.random() * types.length)];
+    } while (newType === state.activeSpiritType && types.length > 1);
+
+    state.activeSpiritType = newType;
+    console.log(`NEW SPIRIT THEME: ${state.activeSpiritType.toUpperCase()}`);
+}
+
 function initWorld() {
     entitiesLayer.innerHTML = '';
 
@@ -399,6 +412,14 @@ function initWorld() {
     state.entities = [];
     const centerX = state.world.width / 2;
     const centerY = state.world.height / 2;
+
+    // Initialize spirit type if not set
+    if (!state.activeSpiritType) randomizeSpiritType();
+    // Every 5 levels, pick a new theme
+    if (state.level % 5 === 1 && state.level > 1) {
+        // Only randomize once per 5-level block
+        // We check if we just entered this block
+    }
 
     const forge = { id: 'light-forge', x: centerX, y: centerY, type: 'forge' };
     state.entities.push(forge);
@@ -560,18 +581,24 @@ function advanceLevel() {
             state.entities = [];
             initWorld();
             reconnectTethers();
+
+            // Randomize Spirit Theme every 5 levels
+            if (state.level % 5 === 1) {
+                randomizeSpiritType();
+            }
+
             updateWorldColors();
             updateHUD();
-            
+
             // Biome Toast
             const thresholds = Object.keys(biomes).map(Number).sort((a, b) => b - a);
             const activeThreshold = thresholds.find(t => state.level >= t) || 1;
             const biome = biomes[activeThreshold];
-            
+
             title.textContent = biome.name.toUpperCase();
             bDesc.textContent = `AREA ${state.level} DISCOVERED`;
             toast.classList.add('show');
-            
+
             playLevelUpSound();
             saveGame();
 
@@ -808,10 +835,10 @@ function updateCombo() {
 function addCombo() {
     state.combo.count++;
     state.combo.timer = state.combo.maxTimer;
-    
+
     // Multiplier scales with count up to 5x
-    state.combo.multiplier = 1 + (Math.min(state.combo.count, 40) / 10); 
-    
+    state.combo.multiplier = 1 + (Math.min(state.combo.count, 40) / 10);
+
     if (state.combo.count >= 20 && !state.combo.frenzy) {
         state.combo.frenzy = true;
         frenzyIndicator.style.display = 'block';
@@ -850,7 +877,11 @@ function checkInteractions() {
                     // Star fragments regrow much slower and aren't tied to normal regrowth rate
                     entity.pods = Math.min(maxCapacity, entity.pods + 0.0001 * regrowthBonus);
                 } else {
-                    entity.pods = Math.min(maxCapacity, entity.pods + regrowthRate * regrowthBonus * biome.regrowth);
+                    let rate = regrowthRate * regrowthBonus * biome.regrowth;
+                    if (entity.slowedUntil && Date.now() < entity.slowedUntil) {
+                        rate *= 0.2; // 80% slower when pulsed by Solar Flare
+                    }
+                    entity.pods = Math.min(maxCapacity, entity.pods + rate);
                 }
             }
 
@@ -875,7 +906,7 @@ function checkInteractions() {
                     const critChance = state.upgrades.find(u => u.id === 'crit_harvest').effect(state.upgrades.find(u => u.id === 'crit_harvest').level);
                     const isCrit = Math.random() < critChance;
                     const harvestTotal = isCrit ? amount * 2 : amount;
-                    
+
                     entity.pods -= amount;
                     state.pods += harvestTotal;
                     state.stats.totalPodsHarvested += harvestTotal; // Track stat
@@ -1018,7 +1049,7 @@ function createSellParticle(startX, startY, targetX, targetY) {
 function renderTethers() {
     if (!svgLayer) return;
     svgLayer.innerHTML = '';
-    
+
     // Ensure map is current
     updateEntityMap();
 
@@ -1035,7 +1066,7 @@ function renderTethers() {
             line.setAttribute('y1', t.y1);
             line.setAttribute('x2', t.x2);
             line.setAttribute('y2', t.y2);
-            
+
             // Visual feedback for health
             const healthPct = (t.health / t.maxHealth);
             line.style.stroke = healthPct < 0.3 ? '#ff4444' : (healthPct < 0.6 ? '#ffaa00' : 'var(--neon-cyan)');
@@ -1056,7 +1087,7 @@ function renderTethers() {
             line.setAttribute('y1', src.y);
             line.setAttribute('x2', tgt.x);
             line.setAttribute('y2', tgt.y);
-            
+
             line.style.stroke = 'rgba(255, 255, 255, 0.2)';
             line.style.strokeWidth = 1;
             line.style.strokeDasharray = '5,5';
@@ -1171,7 +1202,7 @@ function updateHUD(type = null) {
     const weaverLevel = state.upgrades.find(u => u.id === 'light_weaver').level;
     if (weaverLevel > 0) {
         if (buildToggle.style.display !== 'flex') buildToggle.style.display = 'flex';
-        
+
         // Ensure structure is intact if it was wiped
         if (!buildToggle.querySelector('.btn-label')) {
             buildToggle.innerHTML = `<span class="btn-icon">🔗</span> <span class="btn-label">Tether</span> <span id="tether-count"></span>`;
@@ -1179,7 +1210,7 @@ function updateHUD(type = null) {
 
         const countEl = document.getElementById('tether-count');
         const labelEl = buildToggle.querySelector('.btn-label');
-        
+
         if (countEl) {
             const tetherCountText = `${state.tethers.length}/${weaverLevel}`;
             if (countEl.textContent !== tetherCountText) countEl.textContent = tetherCountText;
@@ -1227,7 +1258,7 @@ function updateHUD(type = null) {
 
 function renderUpgrades() {
     upgradeList.innerHTML = '';
-    
+
     // Update tab button visual state
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.currency === activeUpgradeTab);
@@ -1247,7 +1278,7 @@ function renderUpgrades() {
 
         const card = document.createElement('div');
         card.className = 'upgrade-card glass';
-        
+
         // Companion Limit Logic
         let displayCost = cost;
         let btnText = `${displayCost} ${currencySym}`;
@@ -1454,7 +1485,7 @@ const SAVE_VERSION = 2.2;
 
 function migrateSaveData(data) {
     if (!data) return {};
-    
+
     // Always ensure keys exist, regardless of version
     if (!data.upgrades) data.upgrades = [];
     if (!data.sparkUpgrades) data.sparkUpgrades = {};
@@ -1464,14 +1495,14 @@ function migrateSaveData(data) {
     if (!data.remnants) data.remnants = [];
     if (!data.companions) data.companions = [];
     if (!data.settings) data.settings = { masterVolume: 80, bgmVolume: 80, sfxVolume: 80, showParticles: true, screenshake: true };
-        
+
     // Handle volume migration from old 'volume' field
     if (data.settings.volume !== undefined && data.settings.masterVolume === undefined) {
         data.settings.masterVolume = data.settings.volume;
         data.settings.bgmVolume = data.settings.volume;
         data.settings.sfxVolume = data.settings.volume;
     }
-    
+
     // Ensure defaults for new fields (and existing ones if they somehow got lost)
     if (data.settings.masterVolume === undefined) data.settings.masterVolume = 80;
     if (data.settings.bgmVolume === undefined) data.settings.bgmVolume = 80;
@@ -1521,7 +1552,7 @@ function saveGame() {
             if (key === 'el') return undefined; // Should already be gone, but extra safety
             return value;
         });
-        
+
         localStorage.setItem('lushHarvestSave', json);
         console.log(`Save Successful! Size: ${json.length} chars. Motes: ${saveData.motes}`);
     } catch (e) {
@@ -1541,13 +1572,13 @@ function loadGame() {
 
         let parsed = JSON.parse(saved);
         console.log("Raw Loaded Data:", parsed);
-        
+
         parsed = migrateSaveData(parsed);
 
         // State Reconstruction
         if (typeof parsed.level === 'number') state.level = parsed.level;
         if (parsed.world) state.world = { ...state.world, ...parsed.world };
-        
+
         state.pods = parsed.pods !== undefined ? Number(parsed.pods) : 0;
         state.motes = parsed.motes !== undefined ? Number(parsed.motes) : 0;
         state.starFragments = parsed.starFragments !== undefined ? Number(parsed.starFragments) : 0;
@@ -1562,7 +1593,7 @@ function loadGame() {
             const sVol = document.getElementById('sfx-volume-control');
             const part = document.getElementById('particles-toggle');
             const shake = document.getElementById('shake-toggle');
-            
+
             if (mVol) mVol.value = state.settings.masterVolume;
             if (bVol) bVol.value = state.settings.bgmVolume;
             if (sVol) sVol.value = state.settings.sfxVolume;
@@ -1610,7 +1641,7 @@ function loadGame() {
         const capBonus = Number(state.sparkUpgrades.celestial_pockets) ? 50 : 0;
         const speedU = state.upgrades.find(u => u.id === 'speed');
         const capU = state.upgrades.find(u => u.id === 'capacity');
-        
+
         state.player.speed = (speedU ? speedU.effect(speedU.level) : 4) * speedBonus;
         state.player.maxPods = (capU ? capU.effect(capU.level) : 20) + capBonus;
 
@@ -1686,8 +1717,8 @@ buildToggle.addEventListener('click', () => {
             const forge = state.entities.find(e => e.type === 'forge');
             const dist = Math.sqrt(Math.pow(forge.x - state.player.x, 2) + Math.pow(forge.y - state.player.y, 2));
             if (dist < 200) {
-                state.tethers.push({ 
-                    sourceId: state.buildMode.sourceId, 
+                state.tethers.push({
+                    sourceId: state.buildMode.sourceId,
                     targetId: forge.id,
                     health: 100,
                     maxHealth: 100
@@ -1899,25 +1930,90 @@ function spawnVoidSpirit() {
 
     const id = `spirit-${Date.now()}`;
     const el = document.createElement('div');
-    el.className = 'void-spirit';
+    const type = state.activeSpiritType || 'glimmer';
+    el.className = `void-spirit spirit-${type}`;
     el.id = id;
     el.innerHTML = '<div class="spirit-core"></div>';
     entitiesLayer.appendChild(el);
 
-    const thresholds = Object.keys(biomes).map(Number).sort((a, b) => b - a);
-    const activeThreshold = thresholds.find(t => state.level >= t) || 1;
-    const biome = biomes[activeThreshold];
+    state.voidSpirits.push({
+        id, x, y, el, type,
+        dispelling: false,
+        speed: (1 + Math.random() * 1.5) * biome.spiritSpeed,
+        lastPulse: Date.now()
+    });
+}
 
-    state.voidSpirits.push({ id, x, y, el, dispelling: false, speed: (1 + Math.random() * 1.5) * biome.spiritSpeed });
+function spawnShreds(x, y) {
+    for (let i = 0; i < 2; i++) {
+        const id = `shred-${Date.now()}-${i}`;
+        const el = document.createElement('div');
+        el.className = 'void-spirit spirit-shred';
+        el.id = id;
+        el.innerHTML = '<div class="spirit-core"></div>';
+        entitiesLayer.appendChild(el);
+
+        const angle = Math.random() * Math.PI * 2;
+        const vx = Math.cos(angle) * 30;
+        const vy = Math.sin(angle) * 30;
+
+        state.voidSpirits.push({
+            id, x: x + vx, y: y + vy, el, type: 'glimmer',
+            isShred: true,
+            dispelling: false,
+            speed: 3 + Math.random() * 2
+        });
+    }
+}
+
+function triggerFlarePulse(spirit) {
+    const pulse = document.createElement('div');
+    pulse.className = 'flare-pulse';
+    pulse.style.left = `${spirit.x}px`;
+    pulse.style.top = `${spirit.y}px`;
+    entitiesLayer.appendChild(pulse);
+
+    // Animate and remove pulse
+    setTimeout(() => pulse.remove(), 1000);
+
+    // Find nearest tree tether source
+    let nearestTree = null;
+    let minDist = 300;
+
+    state.entities.forEach(ent => {
+        if (ent.type === 'tree') {
+            const dx = ent.x - spirit.x;
+            const dy = ent.y - spirit.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestTree = ent;
+            }
+        }
+    });
+
+    if (nearestTree) {
+        nearestTree.slowedUntil = Date.now() + 5000;
+        // Visual indicator on tree
+        const treeEl = document.getElementById(nearestTree.id);
+        if (treeEl) {
+            treeEl.classList.add('tree-slowed');
+            setTimeout(() => treeEl.classList.remove('tree-slowed'), 5000);
+        }
+    }
 }
 
 function updateSpirits() {
     const threatenedPoints = []; // List of points companions should move toward
-    
+
     state.voidSpirits = state.voidSpirits.filter(s => {
         if (s.dispelling) {
             s.el.style.opacity = parseFloat(s.el.style.opacity || 1) - 0.1;
             if (parseFloat(s.el.style.opacity) <= 0) {
+                // Handle Shade splitting on death
+                if (s.type === 'shade' && !s.isShred) {
+                    spawnShreds(s.x, s.y);
+                }
                 s.el.remove();
                 return false;
             }
@@ -1930,13 +2026,13 @@ function updateSpirits() {
             const t = state.tethers[i];
             // Use cached coordinates if available
             const x1 = t.x1 || 0, y1 = t.y1 || 0, x2 = t.x2 || 0, y2 = t.y2 || 0;
-            
+
             // Fast bounding box check (optional but helper)
             const minX = Math.min(x1, x2) - 30;
             const maxX = Math.max(x1, x2) + 30;
             const minY = Math.min(y1, y2) - 30;
             const maxY = Math.max(y1, y2) + 30;
-            
+
             if (s.x > minX && s.x < maxX && s.y > minY && s.y < maxY) {
                 const dist = getDistToSegment(s.x, s.y, x1, y1, x2, y2);
                 if (dist < 25) {
@@ -1967,7 +2063,21 @@ function updateSpirits() {
         // Move toward player OR nearest tree (tether source)
         let targetX = state.player.x;
         let targetY = state.player.y;
-        let minSqDist = Math.pow(s.x - targetX, 2) + Math.pow(s.y - targetY, 2);
+        let distSq = Math.pow(s.x - targetX, 2) + Math.pow(s.y - targetY, 2);
+
+        // Depth Creeper: Speed boost when far from player
+        let currentSpeed = s.speed;
+        if (s.type === 'creeper' && distSq > 250000) { // > 500 units
+            currentSpeed *= 1.8;
+        }
+
+        // Solar Flare: Periodic pulse to slow tree regrowth
+        if (s.type === 'flare' && !s.isShred && Date.now() - s.lastPulse > 4000) {
+            triggerFlarePulse(s);
+            s.lastPulse = Date.now();
+        }
+
+        let minSqDist = distSq;
 
         for (const t of state.tethers) {
             const dSq = Math.pow(s.x - (t.x1 || 0), 2) + Math.pow(s.y - (t.y1 || 0), 2);
@@ -1976,10 +2086,10 @@ function updateSpirits() {
 
         const dx = targetX - s.x;
         const dy = targetY - s.y;
-        const dist = Math.sqrt(minSqDist);
-        if (dist > 1) {
-            s.x += (dx / dist) * s.speed;
-            s.y += (dy / dist) * s.speed;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > 0) {
+            s.x += (dx / dist) * currentSpeed;
+            s.y += (dy / dist) * currentSpeed;
         }
 
         s.el.style.left = `${s.x - 20}px`;
@@ -2052,7 +2162,7 @@ function spawnCompanionElement(companion) {
 
 function updateCompanions() {
     const threats = state._threats || [];
-    
+
     state.companions.forEach((c, index) => {
         // AI Logic: Find nearest spirit from the threat list (already filtered)
         let targetSpirit = null;
@@ -2222,7 +2332,7 @@ function updateBoosts() {
     for (let boostKey in state.boosts.active) {
         if (state.boosts.active[boostKey] > 0) {
             state.boosts.active[boostKey]--;
-            
+
             let icon = '✨';
             let name = 'Luminous Surge';
             if (boostKey === 'speed_1.5x') {
@@ -2247,7 +2357,7 @@ function updateBoosts() {
     activeBuffs.forEach(buff => {
         const bubble = document.createElement('div');
         bubble.className = 'buff-bubble glass';
-        
+
         const mins = Math.floor(buff.timer / 60);
         const secs = Math.ceil(buff.timer % 60);
         const timeStr = mins > 0 ? `${mins}:${secs.toString().padStart(2, '0')}` : `${secs}s`;
@@ -2282,7 +2392,7 @@ window.checkSaveIntegrity = () => {
         console.log("Motes in File:", parsed.motes);
         console.log("Upgrades in File:", parsed.upgrades?.length || 0);
         console.log("Entities in File:", parsed.entities?.length || 0);
-    } catch(e) {
+    } catch (e) {
         console.error("Save Corrupted or Missing:", e);
     }
     console.groupEnd();
@@ -2297,8 +2407,8 @@ window.addEventListener('storage', (e) => {
                 console.log(`Syncing progress from Tab ${data.instanceId}...`);
                 loadGame();
             }
-        } catch(err) {
+        } catch (err) {
             console.warn("Storage sync failed:", err);
         }
     }
-});
+});
